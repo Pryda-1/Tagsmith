@@ -31,7 +31,10 @@ public final class ItemFixer {
             boolean removeUnbreakable,
             boolean removeAttributeModifiers,
             boolean fixLegacyFormat,
-            PotionRules potionRules
+            PotionRules potionRules,
+            Set<String> spawnEggEntityDataKeys, // spawn egg entity_data containing any of these keys is removed
+            boolean removeFoodAndConsumable,    // items with both food and consumable lose both
+            Set<String> removedItems            // item ids deleted outright
     ) {}
 
     /**
@@ -75,6 +78,12 @@ public final class ItemFixer {
             patterns.add("custom_potion_effects"); // 1.20.2 - 1.20.4
             patterns.add("CustomPotionEffects");   // older
         }
+        if (!settings.spawnEggEntityDataKeys().isEmpty()) {
+            patterns.add("entity_data");
+            patterns.add("EntityTag");
+        }
+        if (settings.removeFoodAndConsumable()) patterns.add("consumable");
+        for (String id : settings.removedItems()) patterns.add(id.substring(id.indexOf(':') + 1));
         this.prefilterPatterns = patterns.stream()
                 .map(p -> p.getBytes(StandardCharsets.US_ASCII))
                 .toArray(byte[][]::new);
@@ -99,7 +108,20 @@ public final class ItemFixer {
     public boolean fixTree(CompoundTag root, String location, List<String> report, FixStats stats) {
         Walk walk = new Walk(location, report, stats);
         walk.path.add("");
-        return walk.visit(root);
+        return (walk.visit(root) & CHANGED) != 0;
+    }
+
+    /** Result bits of {@link Walk#visit}. DELETE asks the parent to remove the visited tag. */
+    private static final int CHANGED = 1, DELETE = 2;
+
+    /** Keys whose deleted item takes the enclosing compound down with it. */
+    private static boolean deletingChildDeletesParent(CompoundTag parent, String key) {
+        return switch (key) {
+            case "item" -> parent.map().containsKey("slot");                // minecraft:container entry
+            case "buy", "buyB", "sell" -> true;                             // villager / wandering trader offer
+            case "Item" -> "minecraft:item".equals(parent.getString("id")); // dropped item entity
+            default -> false;
+        };
     }
 
     private final class Walk {
@@ -114,8 +136,9 @@ public final class ItemFixer {
             this.stats = stats;
         }
 
-        boolean visit(Tag tag) {
-            boolean changed = false;
+        /** Returns CHANGED and/or DELETE bits. */
+        int visit(Tag tag) {
+            int result = 0;
             if (tag instanceof CompoundTag compound) {
                 int last = path.size() - 1;
                 String segment = path.get(last);
@@ -123,27 +146,54 @@ public final class ItemFixer {
                 if (label != null) path.set(last, segment + label);
 
                 if (looksLikeItem(compound)) {
-                    changed |= fixItem(compound);
+                    String id = compound.getString("id");
+                    if (settings.removedItems().contains(id)) {
+                        stats.itemsRemoved.increment();
+                        report.add(location + " | " + currentPath() + " | " + id + " | removed item");
+                        path.set(last, segment);
+                        return CHANGED | DELETE;
+                    }
+                    if (fixItem(compound)) result |= CHANGED;
                 }
+                List<String> keysToRemove = null;
                 for (Map.Entry<String, Tag> entry : compound.map().entrySet()) {
                     Tag child = entry.getValue();
                     if (child instanceof CompoundTag || child instanceof ListTag) {
                         path.add(entry.getKey());
-                        changed |= visit(child);
+                        int childResult = visit(child);
                         path.removeLast();
+                        result |= childResult & CHANGED;
+                        if ((childResult & DELETE) != 0) {
+                            if (deletingChildDeletesParent(compound, entry.getKey())) {
+                                path.set(last, segment);
+                                return CHANGED | DELETE;
+                            }
+                            if (keysToRemove == null) keysToRemove = new ArrayList<>();
+                            keysToRemove.add(entry.getKey());
+                        }
                     }
                 }
+                if (keysToRemove != null) keysToRemove.forEach(compound::remove);
                 path.set(last, segment);
             } else if (tag instanceof ListTag list
                     && (list.elementType() == Tag.COMPOUND || list.elementType() == Tag.LIST)) {
                 List<Tag> values = list.values();
+                List<Integer> toRemove = null;
                 for (int i = 0; i < values.size(); i++) {
                     path.add("[" + i + "]");
-                    changed |= visit(values.get(i));
+                    int childResult = visit(values.get(i));
                     path.removeLast();
+                    result |= childResult & CHANGED;
+                    if ((childResult & DELETE) != 0) {
+                        if (toRemove == null) toRemove = new ArrayList<>();
+                        toRemove.add(i);
+                    }
+                }
+                if (toRemove != null) {
+                    for (int i = toRemove.size() - 1; i >= 0; i--) values.remove((int) toRemove.get(i));
                 }
             }
-            return changed;
+            return result;
         }
 
         private boolean fixItem(CompoundTag item) {
@@ -183,6 +233,22 @@ public final class ItemFixer {
                         && getComponent(components, "potion_contents") instanceof CompoundTag contents) {
                     fixEffectList(contents.getList("custom_effects"), "id", "amplifier", actions);
                 }
+                // 6. Spawn eggs carrying custom villagers / invulnerable mobs / trades.
+                if (id != null && id.endsWith("_spawn_egg")
+                        && getComponent(components, "entity_data") instanceof CompoundTag entityData
+                        && containsAnyKey(entityData, settings.spawnEggEntityDataKeys())) {
+                    removeComponent(components, "entity_data");
+                    actions.add("removed entity_data");
+                    stats.entityDataRemoved.increment();
+                }
+                // 7. Custom food: an item with both food and consumable loses both.
+                if (settings.removeFoodAndConsumable() && getComponent(components, "food") != null
+                        && getComponent(components, "consumable") != null) {
+                    removeComponent(components, "food");
+                    removeComponent(components, "consumable");
+                    actions.add("removed food and consumable");
+                    stats.foodRemoved.increment();
+                }
             }
 
             // Pre-1.20.5 item format, found in chunks that haven't been loaded since the upgrade.
@@ -203,6 +269,13 @@ public final class ItemFixer {
                 if (settings.potionRules().enabled()) {
                     fixEffectList(legacy.getList("custom_potion_effects"), "id", "amplifier", actions); // 1.20.2 - 1.20.4
                     fixEffectList(legacy.getList("CustomPotionEffects"), "Id", "Amplifier", actions);   // older
+                }
+                if (id != null && id.endsWith("_spawn_egg")
+                        && legacy.getCompound("EntityTag") instanceof CompoundTag entityTag
+                        && containsAnyKey(entityTag, settings.spawnEggEntityDataKeys())) {
+                    legacy.remove("EntityTag");
+                    actions.add("removed legacy EntityTag");
+                    stats.entityDataRemoved.increment();
                 }
             }
 
@@ -295,6 +368,13 @@ public final class ItemFixer {
                     Tag.asDouble(pos.values().get(2)));
         }
         return null;
+    }
+
+    private static boolean containsAnyKey(CompoundTag tag, Set<String> keys) {
+        for (String key : keys) {
+            if (tag.map().containsKey(key)) return true;
+        }
+        return false;
     }
 
     private static String effectId(Tag id) {

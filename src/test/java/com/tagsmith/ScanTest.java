@@ -21,7 +21,9 @@ class ScanTest {
 
     static final ItemFixer.Settings SETTINGS = new ItemFixer.Settings(
             Set.of("minecraft:totem_of_undying", "minecraft:bundle"), 18, 10, true, true, true, true,
-            new ItemFixer.PotionRules(true, 14, 3, java.util.Map.of("minecraft:resistance", 3)));
+            new ItemFixer.PotionRules(true, 14, 3, java.util.Map.of("minecraft:resistance", 3)),
+            Set.of("VillagerData", "Invulnerable", "Offers"), true,
+            Set.of("minecraft:command_block", "minecraft:debug_stick", "minecraft:structure_void", "minecraft:jigsaw"));
 
     // ---------- helpers ----------
 
@@ -231,6 +233,83 @@ class ScanTest {
         assertArrayEquals(noise, ((ByteArrayTag) fixed.get("blob")).value());
         byte[] r = Files.readAllBytes(regionDir.resolve("r.1.0.mca"));
         assertEquals((byte) (Compression.ZLIB | 0x80), r[8196]);
+    }
+
+    @Test
+    void spawnEggsFoodAndRemovedItems(@TempDir Path root) throws Exception {
+        Path regionDir = Files.createDirectories(root.resolve("world/region"));
+
+        CompoundTag villagerEgg = item("minecraft:villager_spawn_egg", 1, compound("minecraft:entity_data", compound(
+                "id", s("minecraft:villager"), "VillagerData", compound("level", i(5)))));
+        CompoundTag zombieEgg = item("minecraft:zombie_spawn_egg", 1, compound("minecraft:entity_data", compound(
+                "id", s("minecraft:zombie"), "Invulnerable", new ByteTag((byte) 1))));
+        CompoundTag harmlessEgg = item("minecraft:cow_spawn_egg", 1, compound("minecraft:entity_data", compound(
+                "id", s("minecraft:cow"), "CustomName", s("Bessie"))));
+        CompoundTag food = item("minecraft:stick", 1, compound(
+                "minecraft:food", compound("nutrition", i(20)), "minecraft:consumable", compound(),
+                "minecraft:custom_name", s("snack")));
+        CompoundTag onlyFood = item("minecraft:apple", 1, compound("minecraft:food", compound("nutrition", i(20))));
+
+        // Command block nested in a shulker (container entry {slot,item} must disappear), in a bundle,
+        // as zombie equipment, in a villager trade, and as a dropped item entity.
+        CompoundTag shulker = item("minecraft:shulker_box", 1, compound("minecraft:container", list(Tag.COMPOUND,
+                compound("slot", i(0), "item", item("minecraft:command_block", 1, null)),
+                compound("slot", i(1), "item", item("minecraft:dirt", 5, null)))));
+        CompoundTag bundle = item("minecraft:bundle", 1, compound("minecraft:bundle_contents", list(Tag.COMPOUND,
+                item("minecraft:debug_stick", 1, null), item("minecraft:stone", 3, null))));
+        CompoundTag chest = compound("id", s("minecraft:chest"), "x", i(1), "y", i(2), "z", i(3), "Items", list(Tag.COMPOUND,
+                withSlot(villagerEgg, 0), withSlot(zombieEgg, 1), withSlot(harmlessEgg, 2), withSlot(food, 3),
+                withSlot(onlyFood, 4), withSlot(shulker, 5), withSlot(bundle, 6),
+                withSlot(item("minecraft:jigsaw", 64, null), 7), withSlot(item("minecraft:diamond", 2, null), 8)));
+        CompoundTag[] chunks = new CompoundTag[1024];
+        chunks[0] = compound("block_entities", list(Tag.COMPOUND, chest));
+        Files.write(regionDir.resolve("r.0.0.mca"), regionFile(chunks, Compression.ZLIB));
+
+        Path entitiesDir = Files.createDirectories(root.resolve("world/entities"));
+        CompoundTag zombie = compound("id", s("minecraft:zombie"), "equipment", compound(
+                "mainhand", item("minecraft:command_block", 1, null), "head", item("minecraft:iron_helmet", 1, null)));
+        CompoundTag villager = compound("id", s("minecraft:villager"), "Offers", compound("Recipes", list(Tag.COMPOUND,
+                compound("buy", item("minecraft:emerald", 1, null), "sell", item("minecraft:structure_void", 1, null)),
+                compound("buy", item("minecraft:emerald", 1, null), "sell", item("minecraft:bread", 1, null)))));
+        CompoundTag droppedItem = compound("id", s("minecraft:item"), "Item", item("minecraft:debug_stick", 1, null));
+        CompoundTag itemFrame = compound("id", s("minecraft:item_frame"), "Item", item("minecraft:debug_stick", 1, null));
+        CompoundTag[] entityChunks = new CompoundTag[1024];
+        entityChunks[0] = compound("Entities", list(Tag.COMPOUND, zombie, villager, droppedItem, itemFrame));
+        Files.write(entitiesDir.resolve("r.0.0.mca"), regionFile(entityChunks, Compression.ZLIB));
+
+        assertTrue(ScanRunner.run(options(root, false), Logger.getAnonymousLogger()));
+
+        List<Tag> items = ((CompoundTag) readChunk(Files.readAllBytes(regionDir.resolve("r.0.0.mca")), 0)
+                .getList("block_entities").values().get(0)).getList("Items").values();
+        assertEquals(List.of("minecraft:villager_spawn_egg", "minecraft:zombie_spawn_egg", "minecraft:cow_spawn_egg",
+                        "minecraft:stick", "minecraft:apple", "minecraft:shulker_box", "minecraft:bundle", "minecraft:diamond"),
+                items.stream().map(t -> ((CompoundTag) t).getString("id")).toList());
+        CompoundTag c = (CompoundTag) items.get(0);
+        assertNull(c.getCompound("components").get("minecraft:entity_data"));
+        assertNull(((CompoundTag) items.get(1)).getCompound("components").get("minecraft:entity_data"));
+        assertNotNull(((CompoundTag) items.get(2)).getCompound("components").get("minecraft:entity_data"));
+        CompoundTag stick = ((CompoundTag) items.get(3)).getCompound("components");
+        assertNull(stick.get("minecraft:food"));
+        assertNull(stick.get("minecraft:consumable"));
+        assertEquals("snack", stick.getString("minecraft:custom_name"));
+        assertNotNull(((CompoundTag) items.get(4)).getCompound("components").get("minecraft:food")); // only food: kept
+        List<Tag> shulkerContents = ((CompoundTag) items.get(5)).getCompound("components").getList("minecraft:container").values();
+        assertEquals(1, shulkerContents.size());
+        assertEquals("minecraft:dirt", ((CompoundTag) shulkerContents.get(0)).getCompound("item").getString("id"));
+        List<Tag> bundleContents = ((CompoundTag) items.get(6)).getCompound("components").getList("minecraft:bundle_contents").values();
+        assertEquals(1, bundleContents.size());
+        assertEquals("minecraft:stone", ((CompoundTag) bundleContents.get(0)).getString("id"));
+
+        List<Tag> entities = readChunk(Files.readAllBytes(entitiesDir.resolve("r.0.0.mca")), 0).getList("Entities").values();
+        assertEquals(List.of("minecraft:zombie", "minecraft:villager", "minecraft:item_frame"),
+                entities.stream().map(t -> ((CompoundTag) t).getString("id")).toList());
+        CompoundTag equipment = ((CompoundTag) entities.get(0)).getCompound("equipment");
+        assertNull(equipment.get("mainhand"));
+        assertNotNull(equipment.get("head"));
+        List<Tag> recipes = ((CompoundTag) entities.get(1)).getCompound("Offers").getList("Recipes").values();
+        assertEquals(1, recipes.size());
+        assertEquals("minecraft:bread", ((CompoundTag) recipes.get(0)).getCompound("sell").getString("id"));
+        assertNull(((CompoundTag) entities.get(2)).get("Item")); // item frame emptied, frame kept
     }
 
     static CompoundTag effect(String id, byte amplifier) {

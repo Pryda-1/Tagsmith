@@ -72,6 +72,29 @@ rules:
     max-amplifier-overrides:
       minecraft:resistance: 3
 
+  # Spawn eggs (any *_spawn_egg) whose minecraft:entity_data contains any of these keys
+  # lose the whole entity_data component. Empty list = disabled.
+  spawn-egg-entity-data-keys:
+    - VillagerData
+    - Invulnerable
+    - Offers
+
+  # Items with BOTH minecraft:food and minecraft:consumable lose both components.
+  remove-food-and-consumable: true
+
+  # Items with these ids are deleted entirely, wherever they are.
+  removed-items:
+    - minecraft:structure_void
+    - minecraft:command_block
+    - minecraft:chain_command_block
+    - minecraft:repeating_command_block
+    - minecraft:command_block_minecart
+    - minecraft:debug_stick
+    - minecraft:test_instance_block
+    - minecraft:test_block
+    - minecraft:structure_block
+    - minecraft:jigsaw
+
   # Also fix items still in the pre-1.20.5 format (tag.Enchantments, tag.Unbreakable, ...)
   # inside chunks that have not been loaded (and therefore upgraded) since then.
   fix-legacy-format: true

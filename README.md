@@ -8,6 +8,9 @@ A Paper/Purpur 1.21.11 plugin that scans all player data, block entity data and 
 - `unbreakable` is removed
 - `attribute_modifiers` is removed
 - Custom potion effect amplifiers outside 0–14 are set to 3 (for resistance, outside 0–3 → 3)
+- Spawn eggs whose `entity_data` contains `VillagerData`, `Invulnerable` or `Offers` lose `entity_data`
+- Items with both `food` and `consumable` lose both
+- Command blocks, structure blocks/voids, jigsaws, test blocks, debug sticks and command block minecarts are deleted
 
 ## Usage
 1. Back up your worlds.

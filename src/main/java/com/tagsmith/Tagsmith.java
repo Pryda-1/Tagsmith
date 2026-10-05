@@ -47,7 +47,10 @@ public final class Tagsmith extends JavaPlugin {
                         config.getBoolean("rules.potion-effects.enabled", true),
                         config.getInt("rules.potion-effects.max-amplifier", 14),
                         config.getInt("rules.potion-effects.replacement-amplifier", 3),
-                        amplifierOverrides(config.getConfigurationSection("rules.potion-effects.max-amplifier-overrides"))));
+                        amplifierOverrides(config.getConfigurationSection("rules.potion-effects.max-amplifier-overrides"))),
+                new HashSet<>(config.getStringList("rules.spawn-egg-entity-data-keys")),
+                config.getBoolean("rules.remove-food-and-consumable", true),
+                normalizeIds(config.getStringList("rules.removed-items")));
 
         List<String> paths = config.getStringList("paths");
         boolean dryRun = config.getBoolean("dry-run", false);

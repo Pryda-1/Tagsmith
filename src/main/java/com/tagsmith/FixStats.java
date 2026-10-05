@@ -20,4 +20,7 @@ public final class FixStats {
     public final LongAdder unbreakableRemoved = new LongAdder();
     public final LongAdder attributeModifiersRemoved = new LongAdder();
     public final LongAdder potionAmplifiersReduced = new LongAdder();
+    public final LongAdder entityDataRemoved = new LongAdder();
+    public final LongAdder foodRemoved = new LongAdder();
+    public final LongAdder itemsRemoved = new LongAdder();
 }
